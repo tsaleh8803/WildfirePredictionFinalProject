@@ -9,18 +9,92 @@ This project builds a distributed wildfire prediction pipeline using live NASA F
 - `node-worker2`: Spark Worker + HDFS DataNode
 - `node-worker3`: Spark Worker + HDFS DataNode
 
-## Important Project Files
+## Core Project Files
+
+### `wildfire_shared.py`
+
+Shared utility module used across the project. This file contains reusable functions for:
+
+- loading and cleaning NASA FIRMS wildfire hotspot data  
+- creating the geospatial 0.25° grid system  
+- assigning hotspots to grid cells  
+- computing neighboring cells and partition ownership  
+- helper logic reused by Spark and local scripts  
+
+This file centralizes common logic so multiple scripts use the same preprocessing and spatial definitions.
+
+### `wildfire_spark.py`
+
+Main distributed prediction pipeline executed with Apache Spark.
+
+Responsibilities:
+
+- loads live wildfire hotspot data from FIRMS  
+- loads weather forecasts from HDFS weather outputs  
+- performs distributed daily aggregation of hotspot activity  
+- computes burning neighbors and halo/boundary cell interactions  
+- generates wildfire risk scores for each grid cell  
+- predicts next-day wildfire activity  
+- writes final outputs to HDFS:
 
 ```text
-wildfire_shared.py
-wildfire_spark.py
-fetch_nws_weather_region.py
-export_predictions_geojson.py
-test_prediction_algorithm.py
-raw_fire/
-output/
-data/
+/user/exouser/wildfire/output/predictions_spark
+/user/exouser/wildfire/output/daily_features_spark
 ```
+### `fetch_nws_weather_region.py`
+
+Regional weather ingestion pipeline using the National Weather Service API.
+
+Responsibilities:
+
+- identify representative wildfire-active cells for each region  
+- convert grid centroids into forecast lookup points  
+- fetch hourly weather forecasts  
+- parse wind speed and wind direction data  
+- aggregate hourly forecasts into daily summaries  
+- write weather data to HDFS for Spark processing  
+
+Output path:
+
+```text
+/user/exouser/wildfire/weather_region_daily
+```
+
+### `export_predictions_geojson.py`
+
+Post-processing export script that converts Spark outputs into map-ready geospatial files.
+
+Responsibilities:
+
+- copies prediction CSV outputs from HDFS to local storage  
+- validates geometry boundary columns  
+- reconstructs grid polygons from min/max lat/lon coordinates  
+- exports wildfire predictions as GeoJSON  
+- saves cleaned CSV copies for dashboard use  
+
+Output files include:
+
+```text
+output/predictions.csv
+data/predictions_map.geojson
+```
+
+### `wildfire_frontend.py`
+
+Interactive dashboard built with Streamlit and Plotly for wildfire monitoring and prediction display.
+
+Features:
+
+- national U.S. wildfire severity dashboard  
+- state-level choropleth risk maps  
+- top 10 high-risk state rankings  
+- severity class breakdown charts  
+- detailed state metrics (temperature, wind, humidity, hotspots)  
+- interactive wildfire prediction grid map  
+- filters for prediction score, severity class, and display layers  
+- ranked high-risk grid cells for next-day fire potential  
+
+This file provides the user-facing visualization interface for decision support and exploratory analysis
 
 ---
 
@@ -40,8 +114,6 @@ Verify:
 which hdfs
 which spark-submit
 ```
-
----
 
 ## 2. Start HDFS and Spark
 
