@@ -1,0 +1,346 @@
+import json
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+st.set_page_config(page_title="Wildfire Severity Dashboard", layout="wide")
+
+STATE_DATA_PATH = "/home/exouser/wildfire_project/output/state_severity_week.csv"
+GEOJSON_PATH = "/home/exouser/wildfire_project/data/predictions_map.geojson"
+
+SEVERITY_COLORS = {
+    "Low": "skyblue",
+    "Moderate": "dodgerblue",
+    "High": "crimson",
+    "Critical": "red",
+}
+
+
+@st.cache_data
+def load_state_data() -> pd.DataFrame:
+    df = pd.read_csv(STATE_DATA_PATH)
+
+    severity_order = ["Low", "Moderate", "High", "Critical"]
+    if "severity_class" in df.columns:
+        df["severity_class"] = pd.Categorical(
+            df["severity_class"],
+            categories=severity_order,
+            ordered=True,
+        )
+
+    df = df.sort_values("severity_score", ascending=False)
+    return df
+
+
+@st.cache_data
+def load_prediction_geojson():
+    with open(GEOJSON_PATH, "r") as f:
+        geojson = json.load(f)
+
+    rows = []
+    for feature in geojson["features"]:
+        props = feature["properties"].copy()
+        rows.append(props)
+
+    df = pd.DataFrame(rows)
+
+    numeric_cols = [
+        "current_hotspot_count",
+        "burning_neighbors",
+        "avg_frp",
+        "max_frp",
+        "avg_brightness",
+        "high_conf_count",
+        "score",
+        "predicted_fire_next_day",
+        "actual_fire_next_day",
+        "min_lon",
+        "min_lat",
+        "max_lon",
+        "max_lat",
+    ]
+
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    if "score" in df.columns:
+        df = df.sort_values("score", ascending=False)
+
+    return geojson, df
+
+
+state_df = load_state_data()
+prediction_geojson, prediction_df = load_prediction_geojson()
+
+st.title("U.S. Wildfire Severity Dashboard")
+st.caption("Blue = lower severity, red = higher severity")
+
+with st.sidebar:
+    st.header("Controls")
+
+    selected_classes = st.multiselect(
+        "Severity",
+        options=["Low", "Moderate", "High", "Critical"],
+        default=["Low", "Moderate", "High", "Critical"],
+    )
+
+    state_view_mode = st.selectbox(
+        "State Layer",
+        options=["Severity Score", "Severity Class", "Hotspot Count"],
+    )
+
+    prediction_layer = st.selectbox(
+        "Prediction Layer",
+        options=[
+            "score",
+            "predicted_fire_next_day",
+            "actual_fire_next_day",
+            "current_hotspot_count",
+            "avg_frp",
+        ],
+    )
+
+    if not prediction_df.empty and "score" in prediction_df.columns:
+        score_min = float(prediction_df["score"].min())
+        score_max = float(prediction_df["score"].max())
+        min_score_filter = st.slider(
+            "Min Prediction Score",
+            min_value=score_min,
+            max_value=score_max,
+            value=score_min,
+        )
+    else:
+        min_score_filter = 0.0
+
+filtered_state_df = state_df[state_df["severity_class"].isin(selected_classes)].copy()
+
+if prediction_df.empty:
+    filtered_prediction_df = prediction_df.copy()
+else:
+    filtered_prediction_df = prediction_df[prediction_df["score"] >= min_score_filter].copy()
+
+tab1, tab2 = st.tabs(["Overview", "Prediction Map"])
+
+with tab1:
+    if filtered_state_df.empty:
+        st.warning("No data matches the current filter.")
+    else:
+        top_state = filtered_state_df.iloc[0]["state"]
+        top_score = filtered_state_df.iloc[0]["severity_score"]
+        critical_count = int((filtered_state_df["severity_class"] == "Critical").sum())
+        hotspot_total = int(filtered_state_df["hotspot_count"].sum())
+
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("States", len(filtered_state_df))
+        metric_cols[1].metric("Top State", f"{top_state}")
+        metric_cols[2].metric("Top Score", f"{top_score:.2f}")
+        metric_cols[3].metric("Hotspots", hotspot_total)
+
+        metric_cols2 = st.columns(2)
+        metric_cols2[0].metric("Critical", critical_count)
+        metric_cols2[1].metric(
+            "Avg  Score",
+            f"{filtered_state_df['severity_score'].mean():.2f}",
+        )
+
+        st.subheader("Overview")
+
+        if state_view_mode == "Severity Score":
+            fig_state_map = px.choropleth(
+                filtered_state_df,
+                locations="state",
+                locationmode="USA-states",
+                color="severity_score",
+                scope="usa",
+                hover_name="state",
+                hover_data={
+                    "severity_score": ":.2f",
+                    "severity_class": True,
+                    "hotspot_count": True,
+                    "avg_temp": True,
+                    "avg_wind_speed": True,
+                    "avg_humidity": True,
+                },
+                color_continuous_scale="Bluered",
+            )
+        elif state_view_mode == "Severity Class":
+            fig_state_map = px.choropleth(
+                filtered_state_df,
+                locations="state",
+                locationmode="USA-states",
+                color="severity_class",
+                scope="usa",
+                hover_name="state",
+                hover_data={
+                    "severity_score": ":.2f",
+                    "hotspot_count": True,
+                    "avg_temp": True,
+                    "avg_wind_speed": True,
+                    "avg_humidity": True,
+                },
+                color_discrete_map=SEVERITY_COLORS,
+            )
+        else:
+            fig_state_map = px.choropleth(
+                filtered_state_df,
+                locations="state",
+                locationmode="USA-states",
+                color="hotspot_count",
+                scope="usa",
+                hover_name="state",
+                hover_data={
+                    "severity_score": ":.2f",
+                    "severity_class": True,
+                    "hotspot_count": True,
+                    "avg_temp": True,
+                    "avg_wind_speed": True,
+                    "avg_humidity": True,
+                },
+                color_continuous_scale="Bluered",
+            )
+
+        fig_state_map.update_layout(
+            margin=dict(l=0, r=0, t=10, b=0),
+        )
+        st.plotly_chart(fig_state_map, width="stretch")
+
+        chart_left, chart_right = st.columns([1.4, 1])
+
+        with chart_left:
+            st.subheader("Top 10 Risk States")
+            fig_bar = px.bar(
+                filtered_state_df.head(10),
+                x="state",
+                y="severity_score",
+                color="severity_class",
+                hover_data=["hotspot_count", "avg_temp", "avg_wind_speed", "avg_humidity"],
+                color_discrete_map=SEVERITY_COLORS,
+            )
+            fig_bar.update_layout(margin=dict(l=0, r=0, t=10, b=0))
+            st.plotly_chart(fig_bar, width="stretch")
+
+        with chart_right:
+            st.subheader("Severity Mix")
+            severity_counts = filtered_state_df["severity_class"].value_counts().reset_index()
+            severity_counts.columns = ["severity_class", "count"]
+
+            fig_pie = px.pie(
+                severity_counts,
+                names="severity_class",
+                values="count",
+                color="severity_class",
+                color_discrete_map=SEVERITY_COLORS,
+            )
+            fig_pie.update_layout(margin=dict(l=0, r=0, t=10, b=0))
+            st.plotly_chart(fig_pie, width="stretch")
+
+        st.subheader("State Detail")
+        selected_state = st.selectbox("Choose a state", filtered_state_df["state"].tolist())
+        state_row = filtered_state_df[filtered_state_df["state"] == selected_state].iloc[0]
+
+        detail_cols = st.columns(6)
+        detail_cols[0].metric("Severity Score", f"{state_row['severity_score']:.2f}")
+        detail_cols[1].metric("Severity Class", state_row["severity_class"])
+        detail_cols[2].metric("Hotspot Count", int(state_row["hotspot_count"]))
+        detail_cols[3].metric("Avg Temp", f"{state_row['avg_temp']}")
+        detail_cols[4].metric("Avg Wind", f"{state_row['avg_wind_speed']}")
+        detail_cols[5].metric("Avg Humidity", f"{state_row['avg_humidity']}")
+
+        fig_detail = px.bar(
+            x=["Hotspots", "Avg Temp", "Avg Wind", "Avg Humidity"],
+            y=[
+                state_row["hotspot_count"],
+                state_row["avg_temp"],
+                state_row["avg_wind_speed"],
+                state_row["avg_humidity"],
+            ],
+            labels={"x": "Factor", "y": "Value"},
+            title=f"Drivers for {selected_state}",
+        )
+        fig_detail.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+        st.plotly_chart(fig_detail, width="stretch")
+
+        st.subheader("State Data")
+        st.dataframe(filtered_state_df, width="stretch")
+
+with tab2:
+    st.subheader("Prediction Map")
+
+    if filtered_prediction_df.empty:
+        st.warning("No prediction grid data matches the current filter.")
+    else:
+        st.caption(f"{len(filtered_prediction_df):,} grid cells shown")
+
+        if prediction_layer in ["predicted_fire_next_day", "actual_fire_next_day"]:
+            filtered_prediction_df[prediction_layer] = (
+                filtered_prediction_df[prediction_layer].fillna(0).astype(int).astype(str)
+            )
+            color_args = dict(
+                color=prediction_layer,
+                color_discrete_map={"0": "skyblue", "1": "red"},
+            )
+        else:
+            color_args = dict(
+                color=prediction_layer,
+                color_continuous_scale="Bluered",
+            )
+
+        fig_grid = px.choropleth_mapbox(
+            filtered_prediction_df,
+            geojson=prediction_geojson,
+            locations="cell_id",
+            featureidkey="properties.cell_id",
+            hover_name="cell_id",
+            hover_data={
+                "score": ":.3f",
+                "current_hotspot_count": True,
+                "avg_frp": ":.2f",
+                "max_frp": ":.2f",
+                "predicted_fire_next_day": True,
+                "actual_fire_next_day": True,
+            },
+            zoom=3,
+            center={"lat": 37.5, "lon": -96},
+            mapbox_style="carto-positron",
+            opacity=0.6,
+            **color_args,
+        )
+
+        fig_grid.update_layout(
+            margin=dict(l=0, r=0, t=10, b=0),
+            height=700,
+        )
+        st.plotly_chart(fig_grid, width="stretch")
+
+        summary_cols = st.columns(5)
+        summary_cols[0].metric("Grid Cells Shown", f"{len(filtered_prediction_df):,}")
+        summary_cols[1].metric("Average Score", f"{filtered_prediction_df['score'].mean():.3f}")
+        summary_cols[2].metric("Max Score", f"{filtered_prediction_df['score'].max():.3f}")
+        summary_cols[3].metric(
+            "Predicted Fire Cells",
+            int(filtered_prediction_df["predicted_fire_next_day"].fillna(0).sum()),
+        )
+        summary_cols[4].metric(
+            "Actual Fire Cells",
+            int(filtered_prediction_df["actual_fire_next_day"].fillna(0).sum()),
+        )
+
+        st.subheader("Top Grid Cells")
+        top_cells = filtered_prediction_df.sort_values("score", ascending=False).head(15)
+        st.dataframe(
+            top_cells[
+                [
+                    "cell_id",
+                    "score",
+                    "current_hotspot_count",
+                    "burning_neighbors",
+                    "avg_frp",
+                    "max_frp",
+                    "avg_brightness",
+                    "predicted_fire_next_day",
+                    "actual_fire_next_day",
+                ]
+            ],
+            width="stretch",
+        )
